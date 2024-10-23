@@ -69,6 +69,7 @@ public class Main {
             List<City> allCities = new ArrayList<>();
             session.beginTransaction();
 
+            List<Country> countries  = main.countryDAO.getAll();
             int totalCount = main.cityDAO.getTotalCount();
             int step = 500;
             for (int i = 0; i < totalCount; i += step) {
