@@ -2,20 +2,28 @@ package com.example;
 
 import com.example.dao.*;
 import com.example.domain.*;
+import com.example.redis.CityCountry;
+import com.example.redis.Language;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.api.sync.RedisStringCommands;
 import org.hibernate.*;
 import org.hibernate.cfg.*;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static java.util.Objects.nonNull;
 
 public class Main {
     private final SessionFactory sessionFactory;
-//    private final RedisClient redisClient;
+    private final RedisClient redisClient;
     private final ObjectMapper mapper;
     private final CityDAO cityDAO;
     private final CountryDAO countryDAO;
@@ -25,12 +33,14 @@ public class Main {
         cityDAO = new CityDAO(sessionFactory);
         countryDAO = new CountryDAO(sessionFactory);
 
-//        redisClient = new prepareRedisClient();
+        redisClient = prepareRedisClient();
         mapper = new ObjectMapper();
     }
     public static void main(String[] args) {
         Main main = new Main();
         List<City> allCities = main.fetchData(main);
+        List<CityCountry> preparedData = main.transformData(allCities);
+        main.pushToRedis(preparedData);
         main.shutDown();
     }
 
@@ -55,13 +65,34 @@ public class Main {
         return sessionFactory;
     }
 
+    private RedisClient prepareRedisClient() {
+        RedisClient redisClient = RedisClient.create(RedisURI.create("localhost", 6379));
+        try (StatefulRedisConnection<String, String> connection = redisClient.connect()) {
+            System.out.println("\nConnected to Redis\n");
+        }
+        return redisClient;
+    }
+
+    private void pushToRedis(List<CityCountry> data) {
+        try (StatefulRedisConnection<String, String> connection = redisClient.connect()) {
+            RedisStringCommands<String, String> sync = connection.sync();
+            for (CityCountry cityCountry : data) {
+                try {
+                    sync.set(String.valueOf(cityCountry.getId()), mapper.writeValueAsString(cityCountry));
+                } catch (JsonProcessingException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
     private void shutDown() {
         if (nonNull(sessionFactory)) {
             sessionFactory.close();
         }
-//        if (nonNull(redisClient)) {
-//            redisClient.shutdown();
-//        }
+        if (nonNull(redisClient)) {
+            redisClient.shutdown();
+        }
     }
 
     private List<City> fetchData(Main main) {
@@ -78,5 +109,35 @@ public class Main {
             session.getTransaction().commit();
             return allCities;
         }
+    }
+
+    private List<CityCountry> transformData(List<City> cities) {
+        return cities.stream().map(city -> {
+            CityCountry cityCountry = new CityCountry();
+            cityCountry.setId(city.getId());
+            cityCountry.setName(city.getName());
+            cityCountry.setDistrict(city.getDistrict());
+            cityCountry.setPopulation(city.getPopulation());
+
+            Country country = city.getCountry();
+            cityCountry.setCountryCode(country.getCode());
+            cityCountry.setAlternativeCountryCode(country.getAlternativeCode());
+            cityCountry.setCountryName(country.getName());
+            cityCountry.setContinent(country.getContinent());
+            cityCountry.setCountryRegion(country.getRegion());
+            cityCountry.setCountrySurfaceArea(country.getSurfaceArea());
+            cityCountry.setCountryPopulation(country.getPopulation());
+            Set<CountryLanguage> countryLanguages = country.getLanguages();
+            Set<Language> languages = countryLanguages.stream().map(countryLanguage -> {
+                Language language = new Language();
+                language.setLanguage(countryLanguage.getLanguage());
+                language.setOfficial(countryLanguage.getOfficial());
+                language.setPercentage(countryLanguage.getPercentage());
+                return language;
+            }).collect(Collectors.toSet());
+            cityCountry.setLanguages(languages);
+
+            return cityCountry;
+        }).collect(Collectors.toList());
     }
 }
